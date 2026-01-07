@@ -1,0 +1,20 @@
+// Prisma schema for session persistence
+// Run `npx prisma migrate dev --name init` after editing
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Session {
+  id         Int      @id @default(autoincrement())
+  createdAt  DateTime @default(now())
+  transcript String
+  response   String
+  summary    String
+  microStep  String?
+}
