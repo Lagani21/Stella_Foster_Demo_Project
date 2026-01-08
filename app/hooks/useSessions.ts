@@ -187,13 +187,15 @@ export default function useSessions({
             for (const localSession of localSessions) {
               const created = await createSessionRemote(localSession.title);
               for (const message of localSession.messages || []) {
-                await persistMessage(created.id, message.role, message.text);
+                try {
+                  await persistMessage(created.id, message.role, message.text);
+                } catch {
+                  // Ignore message sync failures
+                }
               }
             }
-            clearLocalSessions();
-          } catch {
-            // Keep local sessions if sync fails
           } finally {
+            clearLocalSessions();
             localSyncDoneRef.current = true;
           }
           const refreshed = await fetch("/api/sessions");

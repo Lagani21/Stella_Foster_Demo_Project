@@ -25,9 +25,9 @@ export async function GET(req: Request) {
     where: {
       userId: session.user.id,
       OR: [
-        { sessionSummary: { contains: query, mode: "insensitive" } },
-        { keyStressor: { contains: query, mode: "insensitive" } },
-        { emotion: { contains: query, mode: "insensitive" } },
+        { sessionSummary: { contains: query } },
+        { keyStressor: { contains: query } },
+        { emotion: { contains: query } },
       ],
     },
     orderBy: { createdAt: "desc" },
