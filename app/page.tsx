@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
+import { signOut, useSession } from "next-auth/react";
 import ChatControls from "./components/ChatControls";
 import ChatMessages from "./components/ChatMessages";
 import EmptyState from "./components/EmptyState";
@@ -54,6 +55,10 @@ declare global {
 }
 
 function VoiceAgent() {
+  const { data: authSession, status: authStatus } = useSession();
+  const userName = authSession?.user?.name || authSession?.user?.email || null;
+  const isAuthed = authStatus === "authenticated";
+
   const initialSessionIdRef = useRef<string>(crypto.randomUUID());
   const [sessions, setSessions] = useState<Session[]>(() => [
     {
@@ -89,14 +94,25 @@ function VoiceAgent() {
   const pendingUserMessageIdRef = useRef<string | null>(null);
   const assistantMessageIdRef = useRef<string | null>(null);
   const liveFinalRef = useRef<string>("");
+  const sessionsRef = useRef<Session[]>(sessions);
+  const activeSessionIdRef = useRef(activeSessionId);
 
   const activeSession = sessions.find((session) => session.id === activeSessionId);
   const activeMessages = activeSession?.messages ?? [];
   const hasMessages = activeMessages.length > 0;
 
+  useEffect(() => {
+    sessionsRef.current = sessions;
+  }, [sessions]);
+
+  useEffect(() => {
+    activeSessionIdRef.current = activeSessionId;
+  }, [activeSessionId]);
+
   const updateActiveMessages = (
     updater: (messages: ChatMessage[]) => ChatMessage[]
   ) => {
+    if (!activeSessionId) return;
     setSessions((prev) =>
       prev.map((session) =>
         session.id === activeSessionId
@@ -124,7 +140,36 @@ function VoiceAgent() {
     }
   };
 
-  const createSession = () => {
+  const persistMessage = async (sessionId: string, role: string, text: string) => {
+    if (!isAuthed) return;
+    await fetch(`/api/sessions/${sessionId}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ role, text }),
+    });
+  };
+
+  const createSessionRemote = async (title?: string) => {
+    const res = await fetch("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title }),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(text || "Failed to create session");
+    }
+    return (await res.json()) as Session;
+  };
+
+  const createSession = async () => {
+    if (isAuthed) {
+      const created = await createSessionRemote();
+      setSessions((prev) => [...prev, created]);
+      setActiveSessionId(created.id);
+      resetSessionState();
+      return;
+    }
     const newId = crypto.randomUUID();
     setSessions((prev) => [
       ...prev,
@@ -144,10 +189,13 @@ function VoiceAgent() {
     resetSessionState();
   };
 
-  const deleteSession = (id: string) => {
+  const deleteSession = async (id: string) => {
     if (sessions.length === 1) {
       setStatus("You need at least one session.");
       return;
+    }
+    if (isAuthed) {
+      await fetch(`/api/sessions/${id}`, { method: "DELETE" });
     }
     setSessions((prev) => prev.filter((session) => session.id !== id));
     if (activeSessionId === id) {
@@ -165,9 +213,16 @@ function VoiceAgent() {
     setEditingTitle(current?.title || "");
   };
 
-  const commitRenameSession = (id: string) => {
+  const commitRenameSession = async (id: string) => {
     const nextName = editingTitle.trim();
     if (!nextName) return;
+    if (isAuthed) {
+      await fetch(`/api/sessions/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: nextName }),
+      });
+    }
     setSessions((prev) =>
       prev.map((session) =>
         session.id === id ? { ...session, title: nextName } : session
@@ -176,6 +231,27 @@ function VoiceAgent() {
     setEditingSessionId(null);
     setEditingTitle("");
   };
+
+  useEffect(() => {
+    const loadSessions = async () => {
+      if (!isAuthed) return;
+      const res = await fetch("/api/sessions");
+      if (!res.ok) return;
+      const data = (await res.json()) as Session[];
+      if (data.length === 0) {
+        const created = await createSessionRemote();
+        setSessions([created]);
+        setActiveSessionId(created.id);
+        resetSessionState();
+        return;
+      }
+      setSessions(data);
+      setActiveSessionId(data[0].id);
+      resetSessionState();
+    };
+
+    loadSessions();
+  }, [isAuthed]);
 
   // Connect to OpenAI Realtime via WebRTC using an ephemeral key
   useEffect(() => {
@@ -259,6 +335,17 @@ function VoiceAgent() {
             if (event.type === "response.completed") {
               setStatus("Response complete.");
               setIsResponding(false);
+              const sessionId = activeSessionIdRef.current;
+              const assistantId = assistantMessageIdRef.current;
+              if (sessionId && assistantId) {
+                const session = sessionsRef.current.find(
+                  (item) => item.id === sessionId
+                );
+                const message = session?.messages.find((msg) => msg.id === assistantId);
+                if (message?.text) {
+                  persistMessage(sessionId, "assistant", message.text);
+                }
+              }
               assistantMessageIdRef.current = null;
             }
             if (event.type === "error") {
@@ -324,7 +411,7 @@ function VoiceAgent() {
       mediaRecorderRef.current = null;
       recognitionRef.current = null;
     };
-  }, [activeSessionId]);
+  }, []);
 
   const ensureSpeechRecognition = () => {
     if (recognitionRef.current) return recognitionRef.current;
@@ -401,6 +488,10 @@ function VoiceAgent() {
             )
           );
           pendingUserMessageIdRef.current = null;
+        }
+        const sessionId = activeSessionIdRef.current;
+        if (sessionId && finalTranscript) {
+          persistMessage(sessionId, "user", finalTranscript);
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : "Transcription error";
@@ -505,6 +596,8 @@ function VoiceAgent() {
           editingSessionId={editingSessionId}
           editingTitle={editingTitle}
           menuSessionId={menuSessionId}
+          authStatus={authStatus}
+          userName={userName}
           onCreateSession={createSession}
           onSwitchSession={switchSession}
           onStartRename={(id) => {
@@ -524,6 +617,7 @@ function VoiceAgent() {
             setMenuSessionId((prev) => (prev === id ? null : id))
           }
           onEditingTitleChange={setEditingTitle}
+          onSignOut={() => signOut({ callbackUrl: "/login" })}
         />
 
         <main className="flex-1 md:pr-4">

@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+
 type Session = {
   id: string;
   title: string;
@@ -12,6 +14,8 @@ type SessionSidebarProps = {
   editingSessionId: string | null;
   editingTitle: string;
   menuSessionId: string | null;
+  authStatus: "authenticated" | "unauthenticated" | "loading";
+  userName: string | null;
   onCreateSession: () => void;
   onSwitchSession: (id: string) => void;
   onStartRename: (id: string) => void;
@@ -20,6 +24,7 @@ type SessionSidebarProps = {
   onDeleteSession: (id: string) => void;
   onToggleMenu: (id: string) => void;
   onEditingTitleChange: (value: string) => void;
+  onSignOut: () => void;
 };
 
 export default function SessionSidebar({
@@ -28,6 +33,8 @@ export default function SessionSidebar({
   editingSessionId,
   editingTitle,
   menuSessionId,
+  authStatus,
+  userName,
   onCreateSession,
   onSwitchSession,
   onStartRename,
@@ -36,10 +43,55 @@ export default function SessionSidebar({
   onDeleteSession,
   onToggleMenu,
   onEditingTitleChange,
+  onSignOut,
 }: SessionSidebarProps) {
   return (
-    <aside className="w-full md:w-56 md:ml-[-24px]">
-      <div className="rounded-2xl border border-blue-100 bg-white/80 p-4 shadow-sm backdrop-blur">
+    <aside className="w-full md:w-64 md:ml-[-24px]">
+      <div className="min-h-[520px] rounded-2xl border border-blue-100 bg-white/80 p-5 shadow-sm backdrop-blur">
+        <div className="mb-4 rounded-xl border border-blue-100 bg-white/70 p-3 text-xs text-slate-600">
+          {authStatus === "authenticated" ? (
+            <div className="flex items-center justify-between gap-2">
+              <div className="truncate">
+                <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">
+                  Signed in
+                </div>
+                <div className="text-sm font-semibold text-slate-900">
+                  {userName || "Account"}
+                </div>
+              </div>
+              <button
+                onClick={onSignOut}
+                className="rounded-full px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-600 hover:text-slate-900"
+              >
+                Sign out
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">
+                  Account
+                </div>
+                <div className="text-sm font-semibold text-slate-900">Guest</div>
+              </div>
+              <div className="flex gap-2">
+                <Link
+                  href="/login"
+                  className="rounded-full px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-600 hover:text-slate-900"
+                >
+                  Sign in
+                </Link>
+                <Link
+                  href="/signup"
+                  className="rounded-full px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-900"
+                  style={{ backgroundColor: "#92B5ED" }}
+                >
+                  Sign up
+                </Link>
+              </div>
+            </div>
+          )}
+        </div>
         <div className="flex items-center justify-between">
           <div className="text-xs uppercase tracking-[0.2em] text-slate-500">
             Sessions
