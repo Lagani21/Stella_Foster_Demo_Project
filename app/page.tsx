@@ -7,7 +7,7 @@ import useInsights from "./hooks/useInsights";
 import useSessions from "./hooks/useSessions";
 import useVoiceAgent from "./hooks/useVoiceAgent";
 
-function VoiceAgent() {
+function Shanti() {
   const { data: authSession, status: authStatus } = useSession();
   const userName = authSession?.user?.name || authSession?.user?.email || null;
   const isAuthed = authStatus === "authenticated";
@@ -98,4 +98,4 @@ function VoiceAgent() {
   );
 }
 
-export default VoiceAgent;
+export default Shanti;

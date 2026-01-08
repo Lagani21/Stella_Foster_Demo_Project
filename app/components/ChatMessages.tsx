@@ -38,7 +38,7 @@ export default function ChatMessages({
             style={message.role === "user" ? { backgroundColor: "#92B5ED" } : undefined}
           >
             <div className="text-[10px] uppercase tracking-[0.2em] opacity-70">
-              {message.role === "user" ? "You" : "Voice Agent"}
+              {message.role === "user" ? "You" : "Shanti"}
             </div>
             <div className="mt-2 whitespace-pre-wrap text-sm">{message.text}</div>
           </div>

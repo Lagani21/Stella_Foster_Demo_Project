@@ -1,47 +1,14 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import useFunctionCalls from "./useFunctionCalls";
+import useTranscription from "./useTranscription";
 
 type ChatMessage = {
   id: string;
   role: "user" | "assistant";
   text: string;
 };
-
-type SpeechRecognition = {
-  continuous: boolean;
-  interimResults: boolean;
-  lang: string;
-  onresult: ((event: SpeechRecognitionEvent) => void) | null;
-  start: () => void;
-  stop: () => void;
-};
-
-type SpeechRecognitionEvent = {
-  resultIndex: number;
-  results: SpeechRecognitionResultList;
-};
-
-type SpeechRecognitionResultList = {
-  length: number;
-  [index: number]: SpeechRecognitionResult;
-};
-
-type SpeechRecognitionResult = {
-  isFinal: boolean;
-  [index: number]: SpeechRecognitionAlternative;
-};
-
-type SpeechRecognitionAlternative = {
-  transcript: string;
-};
-
-declare global {
-  interface Window {
-    SpeechRecognition?: new () => SpeechRecognition;
-    webkitSpeechRecognition?: new () => SpeechRecognition;
-  }
-}
 
 type UseVoiceAgentOptions = {
   isAuthed: boolean;
@@ -63,7 +30,6 @@ export default function useVoiceAgent({
   const [status, setStatus] = useState<string | null>(null);
   const [eventLog, setEventLog] = useState<string[]>([]);
   const [lastError, setLastError] = useState<string | null>(null);
-  const [liveTranscript, setLiveTranscript] = useState("");
   const [audioPaused, setAudioPaused] = useState(false);
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
@@ -71,20 +37,15 @@ export default function useVoiceAgent({
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const micTrackRef = useRef<MediaStreamTrack | null>(null);
   const micStreamRef = useRef<MediaStream | null>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const mediaChunksRef = useRef<Blob[]>([]);
-  const recognitionRef = useRef<SpeechRecognition | null>(null);
   const recordingStartedAtRef = useRef<number | null>(null);
   const pendingUserMessageIdRef = useRef<string | null>(null);
   const assistantMessageIdRef = useRef<string | null>(null);
   const assistantTextRef = useRef<string>("");
-  const liveFinalRef = useRef<string>("");
   const activeSessionIdRef = useRef(activeSessionId);
   const updateActiveMessagesRef = useRef(updateActiveMessages);
   const persistMessageRef = useRef(persistMessage);
   const isAuthedRef = useRef(isAuthed);
   const setupInProgressRef = useRef(false);
-  const functionArgsRef = useRef<Record<string, { name: string; args: string }>>({});
   const isRespondingRef = useRef(false);
 
   useEffect(() => {
@@ -103,12 +64,47 @@ export default function useVoiceAgent({
     isAuthedRef.current = isAuthed;
   }, [isAuthed]);
 
+  const sendFollowupResponse = () => {
+    if (!dcRef.current || dcRef.current.readyState !== "open") return;
+    if (isRespondingRef.current) return;
+    dcRef.current.send(JSON.stringify({ type: "response.create" }));
+    isRespondingRef.current = true;
+  };
+
+  const sendData = (payload: Record<string, any>) => {
+    if (!dcRef.current || dcRef.current.readyState !== "open") return;
+    dcRef.current.send(JSON.stringify(payload));
+  };
+
+  const { handleEvent: handleFunctionEvent } = useFunctionCalls({
+    sendData,
+    activeSessionIdRef,
+    sendFollowupResponse,
+  });
+
+  const {
+    liveTranscript,
+    getCurrentTranscript,
+    clearTranscript,
+    startTranscription,
+    stopTranscription,
+    resetTranscription,
+  } = useTranscription({
+    micStreamRef,
+    activeSessionIdRef,
+    pendingUserMessageIdRef,
+    updateActiveMessagesRef,
+    persistMessageRef,
+    setStatus,
+    setError,
+    setLastError,
+  });
+
   const reset = () => {
     pendingUserMessageIdRef.current = null;
     assistantMessageIdRef.current = null;
     assistantTextRef.current = "";
-    liveFinalRef.current = "";
-    setLiveTranscript("");
+    clearTranscript();
     setStatus(null);
     setLastError(null);
     setError(null);
@@ -117,10 +113,7 @@ export default function useVoiceAgent({
       micTrackRef.current.enabled = false;
       setIsRecording(false);
     }
-    recognitionRef.current?.stop();
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
-      mediaRecorderRef.current.stop();
-    }
+    resetTranscription();
   };
 
   const buildRelatedContext = (items: any[]) => {
@@ -162,153 +155,6 @@ export default function useVoiceAgent({
     }
   };
 
-  const sendFollowupResponse = () => {
-    if (!dcRef.current || dcRef.current.readyState !== "open") return;
-    if (isRespondingRef.current) return;
-    dcRef.current.send(JSON.stringify({ type: "response.create" }));
-    isRespondingRef.current = true;
-  };
-
-  const sendFunctionResult = (callId: string | null, name: string, result: any) => {
-    const dc = dcRef.current;
-    if (!dc || dc.readyState !== "open") return;
-    const item: Record<string, any> = {
-      type: "function_call_output",
-      output: JSON.stringify(result ?? {}),
-    };
-    if (callId) item.call_id = callId;
-    dc.send(
-      JSON.stringify({
-        type: "conversation.item.create",
-        item,
-      })
-    );
-  };
-
-  const handleFunctionCall = (name: string, args: string | null, callId: string | null) => {
-    const dc = dcRef.current;
-    if (!dc || dc.readyState !== "open") return;
-    if (name === "log_emotional_state") {
-      void (async () => {
-        try {
-          const payload = args ? JSON.parse(args) : null;
-          if (payload) {
-            await fetch("/api/emotions", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                emotion: payload.emotion,
-                intensity: payload.intensity,
-                primary_triggers: payload.primary_triggers,
-                confidence: payload.confidence,
-                sessionId: activeSessionIdRef.current,
-              }),
-            });
-          }
-        } catch {
-          // Ignore storage failures
-        } finally {
-          sendFunctionResult(callId, "log_emotional_state", { status: "ok" });
-          sendFollowupResponse();
-        }
-      })();
-    }
-    if (name === "externalize_thoughts") {
-      void (async () => {
-        try {
-          const payload = args ? JSON.parse(args) : null;
-          if (payload) {
-            await fetch("/api/externalize", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                summary: payload.summary,
-                structured_view: payload.structured_view,
-                sessionId: activeSessionIdRef.current,
-              }),
-            });
-          }
-        } catch {
-          // Ignore storage failures
-        } finally {
-          sendFunctionResult(callId, "externalize_thoughts", { status: "ok" });
-          sendFollowupResponse();
-        }
-      })();
-    }
-    if (name === "save_session") {
-      void (async () => {
-        try {
-          const payload = args ? JSON.parse(args) : null;
-          if (payload) {
-            await fetch("/api/save-session", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                session_summary: payload.session_summary,
-                emotion: payload.emotion,
-                intensity: payload.intensity,
-                key_stressor: payload.key_stressor,
-                micro_step: payload.micro_step,
-                sessionId: activeSessionIdRef.current,
-              }),
-            });
-          }
-        } catch {
-          // Ignore storage failures
-        } finally {
-          sendFunctionResult(callId, "save_session", { status: "ok" });
-          sendFollowupResponse();
-        }
-      })();
-    }
-    if (name === "retrieve_related_sessions") {
-      void (async () => {
-        try {
-          const payload = args ? JSON.parse(args) : null;
-          if (payload?.query) {
-            const res = await fetch(
-              `/api/related-sessions?query=${encodeURIComponent(
-                payload.query
-              )}&limit=${encodeURIComponent(payload.limit ?? 3)}`
-            );
-            const data = res.ok ? await res.json() : [];
-            sendFunctionResult(callId, "retrieve_related_sessions", { sessions: data });
-            sendFollowupResponse();
-          } else {
-            sendFunctionResult(callId, "retrieve_related_sessions", { sessions: [] });
-            sendFollowupResponse();
-          }
-        } catch {
-          sendFunctionResult(callId, "retrieve_related_sessions", { sessions: [] });
-          sendFollowupResponse();
-        }
-      })();
-    }
-    if (name === "park_worry_for_later") {
-      void (async () => {
-        try {
-          const payload = args ? JSON.parse(args) : null;
-          if (payload) {
-            await fetch("/api/park-worry", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                worry: payload.worry,
-                review_time: payload.review_time,
-                sessionId: activeSessionIdRef.current,
-              }),
-            });
-          }
-        } catch {
-          // Ignore storage failures
-        } finally {
-          sendFunctionResult(callId, "park_worry_for_later", { status: "ok" });
-          sendFollowupResponse();
-        }
-      })();
-    }
-  };
 
   useEffect(() => {
     if (!isAuthed) {
@@ -418,15 +264,6 @@ export default function useVoiceAgent({
                 audio.play().catch(() => {});
               }
             }
-            if (event.type === "response.output_item.added") {
-              const item = event.item || event.output_item || null;
-              if (item?.type === "function_call") {
-                const name = item.name;
-                const args = item.arguments || "";
-                const callId = item.call_id || item.id || null;
-                if (name) handleFunctionCall(name, args, callId);
-              }
-            }
             if (event.type === "output_audio_buffer.started") {
               const audio = audioRef.current;
               if (audio) {
@@ -464,28 +301,7 @@ export default function useVoiceAgent({
               setIsResponding(false);
               isRespondingRef.current = false;
             }
-            if (event.type === "response.function_call") {
-              handleFunctionCall(event.name, event.arguments || null, event.call_id || null);
-            }
-            if (event.type === "response.function_call_arguments.delta") {
-              const callId = event.call_id || event.id || event.item_id;
-              if (callId && event.name && event.delta) {
-                const existing = functionArgsRef.current[callId] || {
-                  name: event.name,
-                  args: "",
-                };
-                existing.args += event.delta;
-                functionArgsRef.current[callId] = existing;
-              }
-            }
-            if (event.type === "response.function_call_arguments.done") {
-              const callId = event.call_id || event.id || event.item_id;
-              const existing = callId ? functionArgsRef.current[callId] : null;
-              const name = event.name || existing?.name;
-              const args = existing?.args || event.arguments || "";
-              if (callId) delete functionArgsRef.current[callId];
-              if (name) handleFunctionCall(name, args, callId || null);
-            }
+            handleFunctionEvent(event);
           } catch {
             // Ignore non-JSON events
           }
@@ -540,160 +356,47 @@ export default function useVoiceAgent({
       setupInProgressRef.current = false;
       dcRef.current?.close();
       pcRef.current?.close();
-      recognitionRef.current?.stop();
-      mediaRecorderRef.current?.stop();
+      resetTranscription();
       micTrackRef.current?.stop();
       pcRef.current = null;
       dcRef.current = null;
       audioRef.current = null;
       micTrackRef.current = null;
       micStreamRef.current = null;
-      mediaRecorderRef.current = null;
-      recognitionRef.current = null;
     };
   }, [isAuthed]);
-
-  const ensureSpeechRecognition = () => {
-    if (recognitionRef.current) return recognitionRef.current;
-    const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!Recognition) return null;
-    const recognition = new Recognition();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = "en-US";
-    recognition.onresult = (event) => {
-      let interim = "";
-      let finalText = liveFinalRef.current;
-      for (let i = event.resultIndex; i < event.results.length; i += 1) {
-        const result = event.results[i];
-        if (result.isFinal) {
-          finalText += (finalText ? " " : "") + result[0].transcript;
-        } else {
-          interim += result[0].transcript;
-        }
-      }
-      liveFinalRef.current = finalText;
-      setLiveTranscript(`${finalText}${interim ? ` ${interim}` : ""}`.trim());
-    };
-    recognitionRef.current = recognition;
-    return recognition;
-  };
-
-  const startTranscriptionCapture = () => {
-    const stream = micStreamRef.current;
-    if (!stream) {
-      setStatus("Microphone stream not ready.");
-      return;
-    }
-    if (typeof MediaRecorder === "undefined") {
-      setStatus("MediaRecorder not supported in this browser.");
-      return;
-    }
-    const options = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-      ? { mimeType: "audio/webm;codecs=opus" }
-      : MediaRecorder.isTypeSupported("audio/webm")
-      ? { mimeType: "audio/webm" }
-      : undefined;
-    const recorder = new MediaRecorder(stream, options);
-    mediaRecorderRef.current = recorder;
-    mediaChunksRef.current = [];
-
-    recorder.ondataavailable = (e) => {
-      if (e.data.size > 0) mediaChunksRef.current.push(e.data);
-    };
-
-    recorder.onstop = async () => {
-      const blob = new Blob(mediaChunksRef.current, {
-        type: recorder.mimeType || "audio/webm",
-      });
-      mediaRecorderRef.current = null;
-      if (!blob.size) {
-        setStatus("No audio captured.");
-        return;
-      }
-      if (blob.size < 8000) {
-        setStatus("Audio too short for transcription.");
-        return;
-      }
-      setStatus("Transcribing...");
-      try {
-        const formData = new FormData();
-        const filename = recorder.mimeType?.includes("opus")
-          ? "audio.webm"
-          : "audio.webm";
-        formData.append("audio", blob, filename);
-        const res = await fetch("/api/stt", { method: "POST", body: formData });
-        const data = await res.json();
-        if (!res.ok) {
-          const details = data.details ? `\n${data.details}` : "";
-          throw new Error(`${data.error || "Transcription failed"}${details}`);
-        }
-        const finalTranscript = data.transcript || "";
-        const pendingId = pendingUserMessageIdRef.current;
-        if (pendingId) {
-          updateActiveMessagesRef.current((prev) =>
-            prev.map((msg) =>
-              msg.id === pendingId ? { ...msg, text: finalTranscript } : msg
-            )
-          );
-          pendingUserMessageIdRef.current = null;
-        }
-        const sessionId = activeSessionIdRef.current;
-        if (sessionId && finalTranscript) {
-          void persistMessageRef.current(sessionId, "user", finalTranscript);
-        }
-      } catch (err) {
-        const message = err instanceof Error ? err.message : "Transcription error";
-        setError(message);
-        setLastError(message);
-      }
-    };
-
-    recorder.start();
-  };
 
   const startMic = () => {
     if (!micTrackRef.current) return;
     micTrackRef.current.enabled = true;
     setIsRecording(true);
     setStatus(null);
-    setLiveTranscript("");
-    liveFinalRef.current = "";
+    clearTranscript();
     recordingStartedAtRef.current = Date.now();
-    const recognition = ensureSpeechRecognition();
-    if (recognition) recognition.start();
-    startTranscriptionCapture();
+    startTranscription();
   };
 
   const stopMic = () => {
     if (!micTrackRef.current) return;
     micTrackRef.current.enabled = false;
     setIsRecording(false);
-    recognitionRef.current?.stop();
     const startedAt = recordingStartedAtRef.current;
     recordingStartedAtRef.current = null;
     const elapsedMs = startedAt ? Date.now() - startedAt : 0;
     if (elapsedMs < 200) {
       setStatus("Recording too short. Hold to speak a bit longer.");
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
-        mediaRecorderRef.current.stop();
-      }
+      stopTranscription();
       return;
     }
-    const userText =
-      liveFinalRef.current.trim() ||
-      liveTranscript.trim() ||
-      "Processing transcript...";
+    const userText = getCurrentTranscript() || "Processing transcript...";
     const userMessageId = crypto.randomUUID();
     pendingUserMessageIdRef.current = userMessageId;
     updateActiveMessagesRef.current((prev) => [
       ...prev,
       { id: userMessageId, role: "user", text: userText },
     ]);
-    setLiveTranscript("");
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
-      mediaRecorderRef.current.stop();
-    }
+    clearTranscript();
+    stopTranscription();
     if (isResponding) {
       setStatus("Response already in progress...");
       return;

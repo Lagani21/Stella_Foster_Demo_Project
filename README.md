@@ -1,24 +1,68 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Shanti Voice AI Demo Project
 
-## Getting Started
+Voice-first AI companion named Shanti with session history, insights, and function calling.
 
-First, run the development server:
+## Prerequisites
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+- Node.js 20.9+ (recommended)
+- npm
+- SQLite (bundled via Prisma)
+
+## Environment Variables
+
+Create `.env.local` in the project root:
+
+```
+OPENAI_API_KEY=your_openai_key
+DEEPGRAM_API_KEY=your_deepgram_key
+DATABASE_URL="file:./dev.db"
+NEXTAUTH_URL=http://localhost:3000
+NEXTAUTH_SECRET=your_secret
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Notes:
+- `DATABASE_URL` points to `prisma/dev.db`.
+- You can generate a secret with `openssl rand -base64 32`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Install
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```
+npm install
+```
+
+## Database Setup
+
+```
+npx prisma migrate dev
+```
+
+Optional:
+```
+npx prisma studio
+```
+
+## Run Locally
+
+```
+npm run dev
+```
+
+Open `http://localhost:3000`.
+
+## Project Structure
+
+- `app/` UI + API routes
+- `app/hooks/` client hooks (voice, transcription, tools)
+- `app/components/` UI components
+- `prisma/` schema and migrations
+
+## Function Calls Implemented
+
+- `log_emotional_state`
+- `externalize_thoughts`
+- `save_session`
+- `retrieve_related_sessions`
+- `park_worry_for_later`
 
 ## Delight Functions (Future Vision)
 
@@ -42,17 +86,16 @@ These are documented as a future roadmap and are not implemented yet.
 }
 ```
 
-## Learn More
+## Known Bugs
 
-To learn more about Next.js, take a look at the following resources:
+- Realtime audio can stop playing after the first response in some browsers; refresh reconnects the WebRTC session.
+- Tool calls sometimes require a second follow-up response to get audio if the model returns only function-call output first.
+- Rate limits can surface during heavy STT usage; responses may delay or fail until limits reset.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Future Work
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- Make tool routing deterministic with explicit tool triggers or server-side tool orchestration.
+- Improve reconnect logic for Realtime sessions and audio playback resilience.
+- Add export/download of sessions and insights.
+- Build a mobile app for easier, on-the-go access.
+- Add reminders for sessions users asked to revisit later.
