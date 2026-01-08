@@ -1,10 +1,21 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
+import ChatControls from "./components/ChatControls";
+import ChatMessages from "./components/ChatMessages";
+import EmptyState from "./components/EmptyState";
+import EventLog from "./components/EventLog";
+import SessionSidebar from "./components/SessionSidebar";
 
 type ChatMessage = {
   id: string;
   role: "user" | "assistant";
   text: string;
+};
+
+type Session = {
+  id: string;
+  title: string;
+  messages: ChatMessage[];
 };
 
 type SpeechRecognition = {
@@ -35,12 +46,6 @@ type SpeechRecognitionAlternative = {
   transcript: string;
 };
 
-type Session = {
-  id: string;
-  title: string;
-  messages: ChatMessage[];
-};
-
 declare global {
   interface Window {
     SpeechRecognition?: new () => SpeechRecognition;
@@ -65,8 +70,6 @@ function VoiceAgent() {
   const [menuSessionId, setMenuSessionId] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [transcript, setTranscript] = useState("");
-  const [agentResponse, setAgentResponse] = useState("");
   const [isRecording, setIsRecording] = useState(false);
   const [isResponding, setIsResponding] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
@@ -103,22 +106,10 @@ function VoiceAgent() {
     );
   };
 
-  const createSession = () => {
-    const newId = crypto.randomUUID();
-    setSessions((prev) => [
-      ...prev,
-      {
-        id: newId,
-        title: `Session ${prev.length + 1}`,
-        messages: [],
-      },
-    ]);
-    setActiveSessionId(newId);
+  const resetSessionState = () => {
     pendingUserMessageIdRef.current = null;
     assistantMessageIdRef.current = null;
     setLiveTranscript("");
-    setTranscript("");
-    setAgentResponse("");
     setStatus(null);
     setLastError(null);
     setError(null);
@@ -133,6 +124,26 @@ function VoiceAgent() {
     }
   };
 
+  const createSession = () => {
+    const newId = crypto.randomUUID();
+    setSessions((prev) => [
+      ...prev,
+      {
+        id: newId,
+        title: `Session ${prev.length + 1}`,
+        messages: [],
+      },
+    ]);
+    setActiveSessionId(newId);
+    resetSessionState();
+  };
+
+  const switchSession = (id: string) => {
+    if (id === activeSessionId) return;
+    setActiveSessionId(id);
+    resetSessionState();
+  };
+
   const deleteSession = (id: string) => {
     if (sessions.length === 1) {
       setStatus("You need at least one session.");
@@ -142,9 +153,10 @@ function VoiceAgent() {
     if (activeSessionId === id) {
       const remaining = sessions.filter((session) => session.id !== id);
       if (remaining[0]) {
-        switchSession(remaining[0].id);
+        setActiveSessionId(remaining[0].id);
       }
     }
+    resetSessionState();
   };
 
   const startRenameSession = (id: string) => {
@@ -163,28 +175,6 @@ function VoiceAgent() {
     );
     setEditingSessionId(null);
     setEditingTitle("");
-  };
-
-  const switchSession = (id: string) => {
-    if (id === activeSessionId) return;
-    setActiveSessionId(id);
-    pendingUserMessageIdRef.current = null;
-    assistantMessageIdRef.current = null;
-    setLiveTranscript("");
-    setTranscript("");
-    setAgentResponse("");
-    setStatus(null);
-    setLastError(null);
-    setError(null);
-    setIsResponding(false);
-    if (isRecording && micTrackRef.current) {
-      micTrackRef.current.enabled = false;
-      setIsRecording(false);
-    }
-    recognitionRef.current?.stop();
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
-      mediaRecorderRef.current.stop();
-    }
   };
 
   // Connect to OpenAI Realtime via WebRTC using an ephemeral key
@@ -220,7 +210,7 @@ function VoiceAgent() {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         micStreamRef.current = stream;
         const micTrack = stream.getTracks()[0];
-        micTrack.enabled = false; // push-to-talk: enable only while pressed
+        micTrack.enabled = false;
         micTrackRef.current = micTrack;
         pc.addTrack(micTrack);
 
@@ -247,7 +237,6 @@ function VoiceAgent() {
               setIsResponding(true);
             }
             if (event.type === "response.output_text.delta" && event.delta) {
-              setAgentResponse((prev) => prev + event.delta);
               setStatus("Receiving response...");
               const id = assistantMessageIdRef.current;
               if (id) {
@@ -258,20 +247,9 @@ function VoiceAgent() {
                 );
               }
             }
-            if (event.type === "input_audio_transcription.delta" && event.delta) {
-              setTranscript((prev) => prev + event.delta);
-            }
-            if (event.type === "input_audio_transcription.completed" && event.text) {
-              setTranscript(event.text);
-            }
-            if (event.type === "conversation.item.input_audio_transcription.completed" && event.text) {
-              setTranscript(event.text);
-            }
             if (event.type === "conversation.item.input_audio_transcription.failed") {
               const message =
-                event.error?.message ||
-                event.message ||
-                "Audio transcription failed.";
+                event.error?.message || event.message || "Audio transcription failed.";
               setError(message);
               setLastError(JSON.stringify(event, null, 2));
             }
@@ -346,12 +324,11 @@ function VoiceAgent() {
       mediaRecorderRef.current = null;
       recognitionRef.current = null;
     };
-  }, []);
+  }, [activeSessionId]);
 
   const ensureSpeechRecognition = () => {
     if (recognitionRef.current) return recognitionRef.current;
-    const Recognition =
-      window.SpeechRecognition || window.webkitSpeechRecognition;
+    const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!Recognition) return null;
     const recognition = new Recognition();
     recognition.continuous = true;
@@ -416,7 +393,6 @@ function VoiceAgent() {
           throw new Error(`${data.error || "Transcription failed"}${details}`);
         }
         const finalTranscript = data.transcript || "";
-        setTranscript(finalTranscript);
         const pendingId = pendingUserMessageIdRef.current;
         if (pendingId) {
           updateActiveMessages((prev) =>
@@ -440,8 +416,6 @@ function VoiceAgent() {
     if (!micTrackRef.current) return;
     micTrackRef.current.enabled = true;
     setIsRecording(true);
-    setTranscript("");
-    setAgentResponse("");
     setStatus(null);
     setLiveTranscript("");
     liveFinalRef.current = "";
@@ -466,7 +440,10 @@ function VoiceAgent() {
       }
       return;
     }
-    const userText = liveFinalRef.current.trim() || liveTranscript.trim() || "Processing transcript...";
+    const userText =
+      liveFinalRef.current.trim() ||
+      liveTranscript.trim() ||
+      "Processing transcript...";
     const userMessageId = crypto.randomUUID();
     pendingUserMessageIdRef.current = userMessageId;
     updateActiveMessages((prev) => [
@@ -494,7 +471,6 @@ function VoiceAgent() {
     }
   };
 
-
   const toggleAudioPlayback = () => {
     const audio = audioRef.current;
     if (!audio) return;
@@ -503,6 +479,14 @@ function VoiceAgent() {
     } else {
       audio.pause();
     }
+  };
+
+  const stopResponse = () => {
+    dcRef.current?.send(JSON.stringify({ type: "response.cancel" }));
+    audioRef.current?.pause();
+    setIsResponding(false);
+    assistantMessageIdRef.current = null;
+    setStatus("Response stopped.");
   };
 
   return (
@@ -514,205 +498,49 @@ function VoiceAgent() {
         fontFamily: '"Space Grotesk", "Avenir Next", "Helvetica Neue", sans-serif',
       }}
     >
-      <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-10 md:flex-row">
-        <aside className="w-full md:w-56 md:ml-[-24px]">
-          <div className="rounded-2xl border border-blue-100 bg-white/80 p-4 shadow-sm backdrop-blur">
-            <div className="flex items-center justify-between">
-              <div className="text-xs uppercase tracking-[0.2em] text-slate-500">
-                Sessions
-              </div>
-              <button
-                className="rounded-full px-2 py-1 text-xs font-semibold uppercase tracking-wider text-slate-900"
-                style={{ backgroundColor: "#92B5ED" }}
-                onClick={createSession}
-                aria-label="Create new session"
-              >
-                +
-              </button>
-            </div>
-            <div className="mt-4 space-y-2">
-              {sessions.map((session) => {
-                const isActive = session.id === activeSessionId;
-                const isEditing = session.id === editingSessionId;
-                const isMenuOpen = session.id === menuSessionId;
-                return (
-                  <div
-                    key={session.id}
-                    className={`relative w-full rounded-xl border px-3 py-2 text-left transition ${
-                      isActive
-                        ? "border-blue-400 bg-blue-50 text-slate-900"
-                        : "border-transparent bg-white/60 text-slate-600 hover:border-blue-200 hover:bg-white"
-                    }`}
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <button
-                        onClick={() => switchSession(session.id)}
-                        className="w-full text-left"
-                      >
-                        {isEditing ? (
-                          <input
-                            className="w-full rounded-md border border-blue-200 bg-white px-2 py-1 text-sm text-slate-900"
-                            value={editingTitle}
-                            onChange={(e) => setEditingTitle(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") commitRenameSession(session.id);
-                              if (e.key === "Escape") {
-                                setEditingSessionId(null);
-                                setEditingTitle("");
-                              }
-                            }}
-                            autoFocus
-                          />
-                        ) : (
-                          <div className="text-sm font-semibold">{session.title}</div>
-                        )}
-                        {!isEditing && (
-                          <div className="text-xs text-slate-500">
-                            {session.messages.length} messages
-                          </div>
-                        )}
-                      </button>
-                      <button
-                        onClick={() =>
-                          setMenuSessionId((prev) =>
-                            prev === session.id ? null : session.id
-                          )
-                        }
-                        className="rounded-full px-2 py-1 text-slate-500 hover:text-slate-700"
-                        aria-label="Session options"
-                      >
-                        &#8942;
-                      </button>
-                    </div>
-                    {isEditing && (
-                      <div className="mt-2 flex gap-2 text-[11px] uppercase tracking-wider text-slate-500">
-                        <button
-                          onClick={() => commitRenameSession(session.id)}
-                          className="rounded-full border border-transparent px-2 py-1 hover:border-blue-200 hover:text-slate-700"
-                        >
-                          Save
-                        </button>
-                        <button
-                          onClick={() => {
-                            setEditingSessionId(null);
-                            setEditingTitle("");
-                          }}
-                          className="rounded-full border border-transparent px-2 py-1 hover:border-slate-200 hover:text-slate-700"
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    )}
-                    {isMenuOpen && (
-                      <div className="absolute right-3 top-10 z-10 w-32 rounded-xl border border-blue-100 bg-white p-2 text-left text-xs text-slate-600 shadow-lg">
-                        <button
-                          className="w-full rounded-md px-2 py-1 text-left hover:bg-blue-50"
-                          onClick={() => {
-                            setMenuSessionId(null);
-                            startRenameSession(session.id);
-                          }}
-                        >
-                          Rename
-                        </button>
-                        <button
-                          className="mt-1 w-full rounded-md px-2 py-1 text-left text-red-600 hover:bg-red-50"
-                          onClick={() => {
-                            setMenuSessionId(null);
-                            deleteSession(session.id);
-                          }}
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </aside>
+      <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-10 md:flex-row">
+        <SessionSidebar
+          sessions={sessions}
+          activeSessionId={activeSessionId}
+          editingSessionId={editingSessionId}
+          editingTitle={editingTitle}
+          menuSessionId={menuSessionId}
+          onCreateSession={createSession}
+          onSwitchSession={switchSession}
+          onStartRename={(id) => {
+            setMenuSessionId(null);
+            startRenameSession(id);
+          }}
+          onCommitRename={commitRenameSession}
+          onCancelRename={() => {
+            setEditingSessionId(null);
+            setEditingTitle("");
+          }}
+          onDeleteSession={(id) => {
+            setMenuSessionId(null);
+            deleteSession(id);
+          }}
+          onToggleMenu={(id) =>
+            setMenuSessionId((prev) => (prev === id ? null : id))
+          }
+          onEditingTitleChange={setEditingTitle}
+        />
 
         <main className="flex-1 md:pr-4">
           <div className="rounded-3xl border border-blue-100 bg-white/70 p-6 shadow-sm backdrop-blur">
             {!hasMessages && !isRecording ? (
-              <div className="flex flex-col items-center justify-center py-16 text-center">
-                <button
-                  className="rounded-full px-8 py-4 text-lg font-semibold text-white shadow-lg"
-                  style={{ backgroundColor: "#92B5ED" }}
-                  disabled={!connected}
-                  onClick={toggleMic}
-                >
-                  {connected ? (
-                    <span className="inline-flex items-center gap-2">
-                      <svg
-                        width="18"
-                        height="18"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        aria-hidden="true"
-                      >
-                        <rect x="9" y="2" width="6" height="12" rx="3" />
-                        <path d="M5 10v2a7 7 0 0 0 14 0v-2" />
-                        <line x1="12" y1="19" x2="12" y2="22" />
-                        <line x1="8" y1="22" x2="16" y2="22" />
-                      </svg>
-                      Start Recording
-                    </span>
-                  ) : (
-                    "Connecting..."
-                  )}
-                </button>
-                <p className="mt-4 text-sm text-slate-500">I am here to listen.</p>
-                {status && <div className="mt-2 text-xs text-slate-500">{status}</div>}
-              </div>
+              <EmptyState connected={connected} status={status} onStart={toggleMic} />
             ) : (
-              <div className="flex flex-col gap-4">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <button
-                    className="rounded-full px-5 py-2 text-sm font-semibold text-white shadow"
-                    style={{ backgroundColor: isRecording ? "#1E3A8A" : "#92B5ED" }}
-                    disabled={!connected}
-                    onClick={toggleMic}
-                  >
-                    {connected ? (
-                      <span className="inline-flex items-center gap-2">
-                        <svg
-                          width="16"
-                          height="16"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="2"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          aria-hidden="true"
-                        >
-                          <rect x="9" y="2" width="6" height="12" rx="3" />
-                          <path d="M5 10v2a7 7 0 0 0 14 0v-2" />
-                          <line x1="12" y1="19" x2="12" y2="22" />
-                          <line x1="8" y1="22" x2="16" y2="22" />
-                        </svg>
-                        {isRecording ? "Recording... Click to Stop" : "Click to Start Recording"}
-                      </span>
-                    ) : (
-                      "Connecting..."
-                    )}
-                  </button>
-                  <button
-                    className="rounded-full px-4 py-2 text-xs font-semibold uppercase tracking-wider text-white disabled:opacity-50"
-                    style={{ backgroundColor: "#1F4D99" }}
-                    disabled={!connected || !audioRef.current}
-                    onClick={toggleAudioPlayback}
-                  >
-                    {audioPaused ? "Resume Response Audio" : "Pause Response Audio"}
-                  </button>
-                </div>
-                {status && <div className="text-xs text-slate-500">{status}</div>}
-              </div>
+              <ChatControls
+                connected={connected}
+                isRecording={isRecording}
+                isResponding={isResponding}
+                audioPaused={audioPaused}
+                status={status}
+                onToggleMic={toggleMic}
+                onToggleAudio={toggleAudioPlayback}
+                onStopResponse={stopResponse}
+              />
             )}
 
             {lastError && (
@@ -722,62 +550,31 @@ function VoiceAgent() {
             )}
             {error && <div className="mt-2 text-sm text-red-600">{error}</div>}
 
-            <div className="mt-6 space-y-4">
-              {activeMessages.length === 0 && (
-                <div className="rounded-2xl border border-dashed border-blue-200 bg-blue-50/40 p-4 text-sm text-slate-500">
-                  Start recording to add your first message.
-                </div>
-              )}
-              {activeMessages.map((message) => (
-                <div
-                  key={message.id}
-                  className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}
-                >
-                  <div
-                    className={`max-w-[80%] rounded-3xl px-4 py-3 shadow ${
-                      message.role === "user"
-                        ? "text-slate-900"
-                        : "border border-blue-100 bg-white text-slate-900"
-                    }`}
-                    style={
-                      message.role === "user"
-                        ? { backgroundColor: "#92B5ED" }
-                        : undefined
-                    }
-                  >
-                    <div className="text-[10px] uppercase tracking-[0.2em] opacity-70">
-                      {message.role === "user" ? "You" : "Voice Agent"}
-                    </div>
-                    <div className="mt-2 whitespace-pre-wrap text-sm">{message.text}</div>
-                  </div>
-                </div>
-              ))}
-              {isRecording && (
-                <div className="flex justify-end">
-                  <div
-                    className="max-w-[80%] rounded-3xl px-4 py-3 text-sm text-slate-900 shadow"
-                    style={{ backgroundColor: "#DCE7FB" }}
-                  >
-                    <div className="text-[10px] uppercase tracking-[0.2em] opacity-70">
-                      You (live)
-                    </div>
-                    <div className="mt-2 whitespace-pre-wrap">
-                      {liveTranscript || "Listening..."}
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
+            <ChatMessages
+              messages={activeMessages}
+              isRecording={isRecording}
+              liveTranscript={liveTranscript}
+            />
           </div>
 
-          <div className="mt-6 rounded-2xl border border-blue-100 bg-white/70 p-3 text-xs text-slate-600 shadow-sm">
-            <div className="text-slate-400 mb-2 uppercase tracking-[0.2em]">Realtime events</div>
-            <div className="max-h-40 overflow-auto whitespace-pre-wrap">
-              {eventLog.length ? eventLog.join("\n") : "No events yet."}
-            </div>
-          </div>
+          <EventLog events={eventLog} />
         </main>
       </div>
+
+      {isRecording && (
+        <ChatControls
+          connected={connected}
+          isRecording={isRecording}
+          isResponding={isResponding}
+          audioPaused={audioPaused}
+          status={null}
+          isFloating
+          showAudioToggle={false}
+          onToggleMic={toggleMic}
+          onToggleAudio={toggleAudioPlayback}
+          onStopResponse={stopResponse}
+        />
+      )}
     </div>
   );
 }
