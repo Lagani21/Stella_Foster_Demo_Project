@@ -84,6 +84,8 @@ export default function useVoiceAgent({
   const persistMessageRef = useRef(persistMessage);
   const isAuthedRef = useRef(isAuthed);
   const setupInProgressRef = useRef(false);
+  const functionArgsRef = useRef<Record<string, { name: string; args: string }>>({});
+  const isRespondingRef = useRef(false);
 
   useEffect(() => {
     activeSessionIdRef.current = activeSessionId;
@@ -160,6 +162,154 @@ export default function useVoiceAgent({
     }
   };
 
+  const sendFollowupResponse = () => {
+    if (!dcRef.current || dcRef.current.readyState !== "open") return;
+    if (isRespondingRef.current) return;
+    dcRef.current.send(JSON.stringify({ type: "response.create" }));
+    isRespondingRef.current = true;
+  };
+
+  const sendFunctionResult = (callId: string | null, name: string, result: any) => {
+    const dc = dcRef.current;
+    if (!dc || dc.readyState !== "open") return;
+    const item: Record<string, any> = {
+      type: "function_call_output",
+      output: JSON.stringify(result ?? {}),
+    };
+    if (callId) item.call_id = callId;
+    dc.send(
+      JSON.stringify({
+        type: "conversation.item.create",
+        item,
+      })
+    );
+  };
+
+  const handleFunctionCall = (name: string, args: string | null, callId: string | null) => {
+    const dc = dcRef.current;
+    if (!dc || dc.readyState !== "open") return;
+    if (name === "log_emotional_state") {
+      void (async () => {
+        try {
+          const payload = args ? JSON.parse(args) : null;
+          if (payload) {
+            await fetch("/api/emotions", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                emotion: payload.emotion,
+                intensity: payload.intensity,
+                primary_triggers: payload.primary_triggers,
+                confidence: payload.confidence,
+                sessionId: activeSessionIdRef.current,
+              }),
+            });
+          }
+        } catch {
+          // Ignore storage failures
+        } finally {
+          sendFunctionResult(callId, "log_emotional_state", { status: "ok" });
+          sendFollowupResponse();
+        }
+      })();
+    }
+    if (name === "externalize_thoughts") {
+      void (async () => {
+        try {
+          const payload = args ? JSON.parse(args) : null;
+          if (payload) {
+            await fetch("/api/externalize", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                summary: payload.summary,
+                structured_view: payload.structured_view,
+                sessionId: activeSessionIdRef.current,
+              }),
+            });
+          }
+        } catch {
+          // Ignore storage failures
+        } finally {
+          sendFunctionResult(callId, "externalize_thoughts", { status: "ok" });
+          sendFollowupResponse();
+        }
+      })();
+    }
+    if (name === "save_session") {
+      void (async () => {
+        try {
+          const payload = args ? JSON.parse(args) : null;
+          if (payload) {
+            await fetch("/api/save-session", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                session_summary: payload.session_summary,
+                emotion: payload.emotion,
+                intensity: payload.intensity,
+                key_stressor: payload.key_stressor,
+                micro_step: payload.micro_step,
+                sessionId: activeSessionIdRef.current,
+              }),
+            });
+          }
+        } catch {
+          // Ignore storage failures
+        } finally {
+          sendFunctionResult(callId, "save_session", { status: "ok" });
+          sendFollowupResponse();
+        }
+      })();
+    }
+    if (name === "retrieve_related_sessions") {
+      void (async () => {
+        try {
+          const payload = args ? JSON.parse(args) : null;
+          if (payload?.query) {
+            const res = await fetch(
+              `/api/related-sessions?query=${encodeURIComponent(
+                payload.query
+              )}&limit=${encodeURIComponent(payload.limit ?? 3)}`
+            );
+            const data = res.ok ? await res.json() : [];
+            sendFunctionResult(callId, "retrieve_related_sessions", { sessions: data });
+            sendFollowupResponse();
+          } else {
+            sendFunctionResult(callId, "retrieve_related_sessions", { sessions: [] });
+            sendFollowupResponse();
+          }
+        } catch {
+          sendFunctionResult(callId, "retrieve_related_sessions", { sessions: [] });
+          sendFollowupResponse();
+        }
+      })();
+    }
+    if (name === "park_worry_for_later") {
+      void (async () => {
+        try {
+          const payload = args ? JSON.parse(args) : null;
+          if (payload) {
+            await fetch("/api/park-worry", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                worry: payload.worry,
+                review_time: payload.review_time,
+                sessionId: activeSessionIdRef.current,
+              }),
+            });
+          }
+        } catch {
+          // Ignore storage failures
+        } finally {
+          sendFunctionResult(callId, "park_worry_for_later", { status: "ok" });
+          sendFollowupResponse();
+        }
+      })();
+    }
+  };
+
   useEffect(() => {
     if (!isAuthed) {
       setConnected(false);
@@ -228,6 +378,7 @@ export default function useVoiceAgent({
                 { id: newId, role: "assistant", text: "" },
               ]);
               setIsResponding(true);
+              isRespondingRef.current = true;
             }
             if (event.type === "response.output_text.delta" && event.delta) {
               setStatus("Receiving response...");
@@ -261,10 +412,32 @@ export default function useVoiceAgent({
             }
             if (event.type === "response.output_audio.delta") {
               setStatus("Receiving audio...");
+              const audio = audioRef.current;
+              if (audio) {
+                audio.muted = false;
+                audio.play().catch(() => {});
+              }
             }
-            if (event.type === "response.completed") {
+            if (event.type === "response.output_item.added") {
+              const item = event.item || event.output_item || null;
+              if (item?.type === "function_call") {
+                const name = item.name;
+                const args = item.arguments || "";
+                const callId = item.call_id || item.id || null;
+                if (name) handleFunctionCall(name, args, callId);
+              }
+            }
+            if (event.type === "output_audio_buffer.started") {
+              const audio = audioRef.current;
+              if (audio) {
+                audio.muted = false;
+                audio.play().catch(() => {});
+              }
+            }
+            if (event.type === "response.completed" || event.type === "response.done") {
               setStatus("Response complete.");
               setIsResponding(false);
+              isRespondingRef.current = false;
               const sessionId = activeSessionIdRef.current;
               const assistantText = assistantTextRef.current.trim();
               if (sessionId && assistantText) {
@@ -289,183 +462,29 @@ export default function useVoiceAgent({
               setError(event.error?.message || "Realtime error");
               setLastError(JSON.stringify(event.error || event, null, 2));
               setIsResponding(false);
+              isRespondingRef.current = false;
             }
-            if (
-              event.type === "response.function_call" &&
-              event.name === "log_emotional_state"
-            ) {
-              void (async () => {
-                try {
-                  const payload = event.arguments
-                    ? JSON.parse(event.arguments)
-                    : null;
-                  if (payload) {
-                    await fetch("/api/emotions", {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({
-                        emotion: payload.emotion,
-                        intensity: payload.intensity,
-                        primary_triggers: payload.primary_triggers,
-                        confidence: payload.confidence,
-                        sessionId: activeSessionIdRef.current,
-                      }),
-                    });
-                  }
-                } catch {
-                  // Ignore storage failures
-                } finally {
-                  dc.send(
-                    JSON.stringify({
-                      type: "response.function_result",
-                      name: "log_emotional_state",
-                      result: { status: "ok" },
-                    })
-                  );
-                }
-              })();
+            if (event.type === "response.function_call") {
+              handleFunctionCall(event.name, event.arguments || null, event.call_id || null);
             }
-            if (
-              event.type === "response.function_call" &&
-              event.name === "externalize_thoughts"
-            ) {
-              void (async () => {
-                try {
-                  const payload = event.arguments
-                    ? JSON.parse(event.arguments)
-                    : null;
-                  if (payload) {
-                    await fetch("/api/externalize", {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({
-                        summary: payload.summary,
-                        structured_view: payload.structured_view,
-                        sessionId: activeSessionIdRef.current,
-                      }),
-                    });
-                  }
-                } catch {
-                  // Ignore storage failures
-                } finally {
-                  dc.send(
-                    JSON.stringify({
-                      type: "response.function_result",
-                      name: "externalize_thoughts",
-                      result: { status: "ok" },
-                    })
-                  );
-                }
-              })();
+            if (event.type === "response.function_call_arguments.delta") {
+              const callId = event.call_id || event.id || event.item_id;
+              if (callId && event.name && event.delta) {
+                const existing = functionArgsRef.current[callId] || {
+                  name: event.name,
+                  args: "",
+                };
+                existing.args += event.delta;
+                functionArgsRef.current[callId] = existing;
+              }
             }
-            if (event.type === "response.function_call" && event.name === "save_session") {
-              void (async () => {
-                try {
-                  const payload = event.arguments
-                    ? JSON.parse(event.arguments)
-                    : null;
-                  if (payload) {
-                    await fetch("/api/save-session", {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({
-                        session_summary: payload.session_summary,
-                        emotion: payload.emotion,
-                        intensity: payload.intensity,
-                        key_stressor: payload.key_stressor,
-                        micro_step: payload.micro_step,
-                        sessionId: activeSessionIdRef.current,
-                      }),
-                    });
-                  }
-                } catch {
-                  // Ignore storage failures
-                } finally {
-                  dc.send(
-                    JSON.stringify({
-                      type: "response.function_result",
-                      name: "save_session",
-                      result: { status: "ok" },
-                    })
-                  );
-                }
-              })();
-            }
-            if (
-              event.type === "response.function_call" &&
-              event.name === "retrieve_related_sessions"
-            ) {
-              void (async () => {
-                try {
-                  const payload = event.arguments
-                    ? JSON.parse(event.arguments)
-                    : null;
-                  if (payload?.query) {
-                    const res = await fetch(
-                      `/api/related-sessions?query=${encodeURIComponent(
-                        payload.query
-                      )}&limit=${encodeURIComponent(payload.limit ?? 3)}`
-                    );
-                    const data = res.ok ? await res.json() : [];
-                    dc.send(
-                      JSON.stringify({
-                        type: "response.function_result",
-                        name: "retrieve_related_sessions",
-                        result: { sessions: data },
-                      })
-                    );
-                  } else {
-                    dc.send(
-                      JSON.stringify({
-                        type: "response.function_result",
-                        name: "retrieve_related_sessions",
-                        result: { sessions: [] },
-                      })
-                    );
-                  }
-                } catch {
-                  dc.send(
-                    JSON.stringify({
-                      type: "response.function_result",
-                      name: "retrieve_related_sessions",
-                      result: { sessions: [] },
-                    })
-                  );
-                }
-              })();
-            }
-            if (
-              event.type === "response.function_call" &&
-              event.name === "park_worry_for_later"
-            ) {
-              void (async () => {
-                try {
-                  const payload = event.arguments
-                    ? JSON.parse(event.arguments)
-                    : null;
-                  if (payload) {
-                    await fetch("/api/park-worry", {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({
-                        worry: payload.worry,
-                        review_time: payload.review_time,
-                        sessionId: activeSessionIdRef.current,
-                      }),
-                    });
-                  }
-                } catch {
-                  // Ignore storage failures
-                } finally {
-                  dc.send(
-                    JSON.stringify({
-                      type: "response.function_result",
-                      name: "park_worry_for_later",
-                      result: { status: "ok" },
-                    })
-                  );
-                }
-              })();
+            if (event.type === "response.function_call_arguments.done") {
+              const callId = event.call_id || event.id || event.item_id;
+              const existing = callId ? functionArgsRef.current[callId] : null;
+              const name = event.name || existing?.name;
+              const args = existing?.args || event.arguments || "";
+              if (callId) delete functionArgsRef.current[callId];
+              if (name) handleFunctionCall(name, args, callId || null);
             }
           } catch {
             // Ignore non-JSON events

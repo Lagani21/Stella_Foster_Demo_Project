@@ -61,7 +61,13 @@ If the user expresses severe distress or thoughts of self-harm:
 - Do not attempt to handle the situation alone.
 
 Your success is measured by one thing:
-Does the user feel slightly calmer and less alone by the end of the interaction?`,
+Does the user feel slightly calmer and less alone by the end of the interaction?
+
+Tool usage rules:
+- If the user expresses overwhelm, anxiety, or pressure, call log_emotional_state.
+- If the user says thoughts are mixed, tangled, or hard to explain, call externalize_thoughts.
+- If the user asks to save the session for later, call save_session.
+- If the user says they can't deal with a worry right now and want to revisit it later, call park_worry_for_later.`,
           output_modalities: ["audio"],
           audio: {
             input: {
@@ -72,6 +78,7 @@ Does the user feel slightly calmer and less alone by the end of the interaction?
             },
             output: { voice: "marin" },
           },
+          tool_choice: "auto",
           tools: [
             {
               type: "function",
