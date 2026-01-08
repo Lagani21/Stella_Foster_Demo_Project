@@ -4,12 +4,10 @@ type ChatControlsProps = {
   connected: boolean;
   isRecording: boolean;
   isResponding: boolean;
-  audioPaused: boolean;
   status: string | null;
   isFloating?: boolean;
-  showAudioToggle?: boolean;
+  showStopResponse?: boolean;
   onToggleMic: () => void;
-  onToggleAudio: () => void;
   onStopResponse: () => void;
 };
 
@@ -17,26 +15,35 @@ export default function ChatControls({
   connected,
   isRecording,
   isResponding,
-  audioPaused,
   status,
   isFloating = false,
-  showAudioToggle = true,
+  showStopResponse = true,
   onToggleMic,
-  onToggleAudio,
   onStopResponse,
 }: ChatControlsProps) {
   const recordButton = (
     <button
-      className="rounded-full px-5 py-2 text-sm font-semibold text-white shadow"
-      style={{ backgroundColor: isRecording ? "#1E3A8A" : "#92B5ED" }}
+      className="rounded-full p-3 text-white shadow"
+      style={{ backgroundColor: isRecording ? "#EF4444" : "#92B5ED" }}
       disabled={!connected}
       onClick={onToggleMic}
+      aria-label={isRecording ? "Stop recording" : "Start recording"}
     >
       {connected ? (
-        <span className="inline-flex items-center gap-2">
+        isRecording ? (
           <svg
-            width="16"
-            height="16"
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="currentColor"
+            aria-hidden="true"
+          >
+            <path d="M3 11l18-7-7 18-2.5-7.5L3 11z" />
+          </svg>
+        ) : (
+          <svg
+            width="18"
+            height="18"
             viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"
@@ -50,51 +57,59 @@ export default function ChatControls({
             <line x1="12" y1="19" x2="12" y2="22" />
             <line x1="8" y1="22" x2="16" y2="22" />
           </svg>
-          {isRecording ? "Recording... Click to Stop" : "Click to Start Recording"}
-        </span>
+        )
       ) : (
-        "Connecting..."
+        <span className="text-xs">...</span>
       )}
     </button>
   );
 
   const stopResponseButton = (
     <button
-      className="rounded-full px-4 py-2 text-xs font-semibold uppercase tracking-wider text-white disabled:opacity-50"
+      className="rounded-full p-3 text-white disabled:opacity-50"
       style={{ backgroundColor: "#1F4D99" }}
       disabled={!connected || !isResponding}
       onClick={onStopResponse}
+      aria-label={isResponding ? "Stop response" : "Play response"}
     >
-      Stop Response
+      {isResponding ? (
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="currentColor"
+          aria-hidden="true"
+        >
+          <rect x="6" y="6" width="12" height="12" rx="2" />
+        </svg>
+      ) : (
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="currentColor"
+          aria-hidden="true"
+        >
+          <polygon points="8,5 19,12 8,19" />
+        </svg>
+      )}
     </button>
   );
 
   if (isFloating) {
     return (
-      <div className="fixed bottom-6 right-6 z-30 flex items-center gap-2">
+      <div className="flex items-center justify-end gap-2">
         {recordButton}
-        {stopResponseButton}
+        {showStopResponse && stopResponseButton}
       </div>
     );
   }
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="flex flex-wrap items-center justify-end gap-3">
         {recordButton}
-        <div className="flex items-center gap-2">
-          {showAudioToggle && (
-            <button
-              className="rounded-full px-4 py-2 text-xs font-semibold uppercase tracking-wider text-white disabled:opacity-50"
-              style={{ backgroundColor: "#1F4D99" }}
-              disabled={!connected}
-              onClick={onToggleAudio}
-            >
-              {audioPaused ? "Unmute Audio" : "Mute Audio"}
-            </button>
-          )}
-          {stopResponseButton}
-        </div>
+        {showStopResponse && stopResponseButton}
       </div>
       {status && <div className="text-xs text-slate-500">{status}</div>}
     </div>

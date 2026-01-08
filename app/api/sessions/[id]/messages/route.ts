@@ -2,9 +2,10 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
-type Params = { params: { id: string } };
+type Params = { params: Promise<{ id: string }> };
 
 export async function POST(req: Request, { params }: Params) {
+  const { id } = await params;
   const session = await getServerSession(authOptions);
   if (!session?.user?.id) {
     return new Response(JSON.stringify({ error: "Unauthorized" }), {
@@ -22,7 +23,7 @@ export async function POST(req: Request, { params }: Params) {
   }
 
   const sessionRow = await prisma.conversationSession.findFirst({
-    where: { id: params.id, userId: session.user.id },
+    where: { id, userId: session.user.id },
     select: { id: true },
   });
 
@@ -37,7 +38,7 @@ export async function POST(req: Request, { params }: Params) {
     data: {
       role,
       text,
-      sessionId: params.id,
+      sessionId: id,
     },
   });
 

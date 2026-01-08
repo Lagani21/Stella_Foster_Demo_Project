@@ -16,20 +16,54 @@ export type Session = {
 
 type UseSessionsOptions = {
   isAuthed: boolean;
+  authStatus: "authenticated" | "unauthenticated" | "loading";
   onReset: () => void;
 };
 
-export default function useSessions({ isAuthed, onReset }: UseSessionsOptions) {
-  const initialSessionIdRef = useRef<string>(crypto.randomUUID());
-  const [sessions, setSessions] = useState<Session[]>(() => [
-    { id: initialSessionIdRef.current, title: "Session 1", messages: [] },
-  ]);
-  const [activeSessionId, setActiveSessionId] = useState(
-    initialSessionIdRef.current
-  );
+export default function useSessions({
+  isAuthed,
+  authStatus,
+  onReset,
+}: UseSessionsOptions) {
+  const localSyncDoneRef = useRef(false);
+  const initialSessionIdRef = useRef<string>("");
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState("");
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState("");
   const [menuSessionId, setMenuSessionId] = useState<string | null>(null);
+
+  const LOCAL_STORAGE_KEY = "stella.sessions.v1";
+
+  const readLocalSessions = () => {
+    if (typeof window === "undefined") return [];
+    try {
+      const raw = window.localStorage.getItem(LOCAL_STORAGE_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? (parsed as Session[]) : [];
+    } catch {
+      return [];
+    }
+  };
+
+  const writeLocalSessions = (nextSessions: Session[]) => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(nextSessions));
+    } catch {
+      // Ignore local storage failures
+    }
+  };
+
+  const clearLocalSessions = () => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.removeItem(LOCAL_STORAGE_KEY);
+    } catch {
+      // Ignore local storage failures
+    }
+  };
 
   const activeSession = sessions.find((session) => session.id === activeSessionId);
   const activeMessages = activeSession?.messages ?? [];
@@ -44,6 +78,19 @@ export default function useSessions({ isAuthed, onReset }: UseSessionsOptions) {
           : session
       )
     );
+  };
+
+  const persistMessage = async (
+    sessionId: string,
+    role: "user" | "assistant",
+    text: string
+  ) => {
+    if (!isAuthed) return;
+    await fetch(`/api/sessions/${sessionId}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ role, text }),
+    });
   };
 
   const createSessionRemote = async (title?: string) => {
@@ -129,24 +176,67 @@ export default function useSessions({ isAuthed, onReset }: UseSessionsOptions) {
 
   useEffect(() => {
     const loadSessions = async () => {
-      if (!isAuthed) return;
+      if (!isAuthed || authStatus === "loading") return;
       const res = await fetch("/api/sessions");
       if (!res.ok) return;
       const data = (await res.json()) as Session[];
-      if (data.length === 0) {
-        const created = await createSessionRemote();
-        setSessions([created]);
-        setActiveSessionId(created.id);
-        onReset();
-        return;
+      if (!localSyncDoneRef.current) {
+        const localSessions = readLocalSessions();
+        if (localSessions.length) {
+          try {
+            for (const localSession of localSessions) {
+              const created = await createSessionRemote(localSession.title);
+              for (const message of localSession.messages || []) {
+                await persistMessage(created.id, message.role, message.text);
+              }
+            }
+            clearLocalSessions();
+          } catch {
+            // Keep local sessions if sync fails
+          } finally {
+            localSyncDoneRef.current = true;
+          }
+          const refreshed = await fetch("/api/sessions");
+          if (refreshed.ok) {
+            const refreshedData = (await refreshed.json()) as Session[];
+            setSessions(refreshedData);
+            setActiveSessionId(refreshedData[0]?.id || "");
+            onReset();
+            return;
+          }
+        } else {
+          localSyncDoneRef.current = true;
+        }
       }
       setSessions(data);
-      setActiveSessionId(data[0].id);
+      setActiveSessionId(data[0]?.id || "");
       onReset();
     };
 
     loadSessions();
-  }, [isAuthed]);
+  }, [isAuthed, authStatus]);
+
+  useEffect(() => {
+    if (isAuthed || authStatus === "loading") return;
+    const localSessions = readLocalSessions();
+    if (localSessions.length) {
+      setSessions(localSessions);
+      setActiveSessionId(localSessions[0].id);
+      return;
+    }
+    if (!initialSessionIdRef.current) {
+      initialSessionIdRef.current = crypto.randomUUID();
+      setSessions([
+        { id: initialSessionIdRef.current, title: "Session 1", messages: [] },
+      ]);
+      setActiveSessionId(initialSessionIdRef.current);
+    }
+  }, [isAuthed, authStatus]);
+
+  useEffect(() => {
+    if (isAuthed || authStatus === "loading") return;
+    writeLocalSessions(sessions);
+  }, [sessions, isAuthed, authStatus]);
 
   return {
     sessions,
@@ -159,6 +249,7 @@ export default function useSessions({ isAuthed, onReset }: UseSessionsOptions) {
     activeMessages,
     hasMessages: activeMessages.length > 0,
     updateActiveMessages,
+    persistMessage,
     createSession,
     switchSession,
     deleteSession,

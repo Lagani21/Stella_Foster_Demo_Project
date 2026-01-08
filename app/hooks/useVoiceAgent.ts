@@ -80,10 +80,26 @@ export default function useVoiceAgent({
   const assistantTextRef = useRef<string>("");
   const liveFinalRef = useRef<string>("");
   const activeSessionIdRef = useRef(activeSessionId);
+  const updateActiveMessagesRef = useRef(updateActiveMessages);
+  const persistMessageRef = useRef(persistMessage);
+  const isAuthedRef = useRef(isAuthed);
+  const setupInProgressRef = useRef(false);
 
   useEffect(() => {
     activeSessionIdRef.current = activeSessionId;
   }, [activeSessionId]);
+
+  useEffect(() => {
+    updateActiveMessagesRef.current = updateActiveMessages;
+  }, [updateActiveMessages]);
+
+  useEffect(() => {
+    persistMessageRef.current = persistMessage;
+  }, [persistMessage]);
+
+  useEffect(() => {
+    isAuthedRef.current = isAuthed;
+  }, [isAuthed]);
 
   const reset = () => {
     pendingUserMessageIdRef.current = null;
@@ -119,7 +135,8 @@ export default function useVoiceAgent({
   };
 
   const maybeInjectRelatedContext = async (query: string) => {
-    if (!isAuthed || !query.trim()) return;
+    if (!isAuthedRef.current || !query.trim()) return;
+    if (!dcRef.current || dcRef.current.readyState !== "open") return;
     try {
       const res = await fetch(
         `/api/related-sessions?query=${encodeURIComponent(query)}&limit=3`
@@ -144,7 +161,15 @@ export default function useVoiceAgent({
   };
 
   useEffect(() => {
+    if (!isAuthed) {
+      setConnected(false);
+      return;
+    }
+    if (setupInProgressRef.current || pcRef.current) {
+      return;
+    }
     let cancelled = false;
+    setupInProgressRef.current = true;
 
     const setup = async () => {
       try {
@@ -152,7 +177,8 @@ export default function useVoiceAgent({
 
         const tokenResponse = await fetch("/api/realtime-token");
         if (!tokenResponse.ok) {
-          throw new Error("Failed to mint realtime token");
+          const errorText = await tokenResponse.text();
+          throw new Error(errorText || "Failed to mint realtime token");
         }
         const data = await tokenResponse.json();
         const ephemeralKey = data.value as string;
@@ -181,6 +207,7 @@ export default function useVoiceAgent({
 
         const dc = pc.createDataChannel("oai-events");
         dcRef.current = dc;
+        dc.onopen = () => setConnected(true);
         dc.onmessage = (e) => {
           try {
             const event = JSON.parse(e.data);
@@ -196,7 +223,7 @@ export default function useVoiceAgent({
               const newId = crypto.randomUUID();
               assistantMessageIdRef.current = newId;
               assistantTextRef.current = "";
-              updateActiveMessages((prev) => [
+              updateActiveMessagesRef.current((prev) => [
                 ...prev,
                 { id: newId, role: "assistant", text: "" },
               ]);
@@ -207,7 +234,19 @@ export default function useVoiceAgent({
               const id = assistantMessageIdRef.current;
               if (id) {
                 assistantTextRef.current += event.delta;
-                updateActiveMessages((prev) =>
+                updateActiveMessagesRef.current((prev) =>
+                  prev.map((msg) =>
+                    msg.id === id ? { ...msg, text: msg.text + event.delta } : msg
+                  )
+                );
+              }
+            }
+            if (event.type === "response.output_audio_transcript.delta" && event.delta) {
+              setStatus("Receiving response...");
+              const id = assistantMessageIdRef.current;
+              if (id) {
+                assistantTextRef.current += event.delta;
+                updateActiveMessagesRef.current((prev) =>
                   prev.map((msg) =>
                     msg.id === id ? { ...msg, text: msg.text + event.delta } : msg
                   )
@@ -229,12 +268,24 @@ export default function useVoiceAgent({
               const sessionId = activeSessionIdRef.current;
               const assistantText = assistantTextRef.current.trim();
               if (sessionId && assistantText) {
-                void persistMessage(sessionId, "assistant", assistantText);
+                void persistMessageRef.current(sessionId, "assistant", assistantText);
               }
               assistantMessageIdRef.current = null;
               assistantTextRef.current = "";
             }
+            if (event.type === "response.output_audio_transcript.done") {
+              const sessionId = activeSessionIdRef.current;
+              const transcript = event.transcript?.trim?.() || "";
+              if (sessionId && transcript) {
+                void persistMessageRef.current(sessionId, "assistant", transcript);
+              }
+            }
             if (event.type === "error") {
+              const errorCode = event.error?.code;
+              if (errorCode === "response_cancel_not_active") {
+                setStatus("No active response to stop.");
+                return;
+              }
               setError(event.error?.message || "Realtime error");
               setLastError(JSON.stringify(event.error || event, null, 2));
               setIsResponding(false);
@@ -420,10 +471,12 @@ export default function useVoiceAgent({
             // Ignore non-JSON events
           }
         };
-        dc.onopen = () => {
-          setConnected(true);
-        };
         dc.onerror = () => setError("Data channel error");
+        dc.onclose = () => {
+          setConnected(false);
+          setStatus("Realtime session ended. Refresh to reconnect.");
+          setIsResponding(false);
+        };
 
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
@@ -454,6 +507,10 @@ export default function useVoiceAgent({
           setConnected(false);
           setError(err instanceof Error ? err.message : "WebRTC error");
         }
+      } finally {
+        if (!cancelled) {
+          setupInProgressRef.current = false;
+        }
       }
     };
 
@@ -461,6 +518,7 @@ export default function useVoiceAgent({
 
     return () => {
       cancelled = true;
+      setupInProgressRef.current = false;
       dcRef.current?.close();
       pcRef.current?.close();
       recognitionRef.current?.stop();
@@ -474,7 +532,7 @@ export default function useVoiceAgent({
       mediaRecorderRef.current = null;
       recognitionRef.current = null;
     };
-  }, [isAuthed, updateActiveMessages, persistMessage]);
+  }, [isAuthed]);
 
   const ensureSpeechRecognition = () => {
     if (recognitionRef.current) return recognitionRef.current;
@@ -512,7 +570,9 @@ export default function useVoiceAgent({
       setStatus("MediaRecorder not supported in this browser.");
       return;
     }
-    const options = MediaRecorder.isTypeSupported("audio/webm")
+    const options = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+      ? { mimeType: "audio/webm;codecs=opus" }
+      : MediaRecorder.isTypeSupported("audio/webm")
       ? { mimeType: "audio/webm" }
       : undefined;
     const recorder = new MediaRecorder(stream, options);
@@ -532,10 +592,17 @@ export default function useVoiceAgent({
         setStatus("No audio captured.");
         return;
       }
+      if (blob.size < 8000) {
+        setStatus("Audio too short for transcription.");
+        return;
+      }
       setStatus("Transcribing...");
       try {
         const formData = new FormData();
-        formData.append("audio", blob, "audio.webm");
+        const filename = recorder.mimeType?.includes("opus")
+          ? "audio.webm"
+          : "audio.webm";
+        formData.append("audio", blob, filename);
         const res = await fetch("/api/stt", { method: "POST", body: formData });
         const data = await res.json();
         if (!res.ok) {
@@ -545,7 +612,7 @@ export default function useVoiceAgent({
         const finalTranscript = data.transcript || "";
         const pendingId = pendingUserMessageIdRef.current;
         if (pendingId) {
-          updateActiveMessages((prev) =>
+          updateActiveMessagesRef.current((prev) =>
             prev.map((msg) =>
               msg.id === pendingId ? { ...msg, text: finalTranscript } : msg
             )
@@ -554,7 +621,7 @@ export default function useVoiceAgent({
         }
         const sessionId = activeSessionIdRef.current;
         if (sessionId && finalTranscript) {
-          void persistMessage(sessionId, "user", finalTranscript);
+          void persistMessageRef.current(sessionId, "user", finalTranscript);
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : "Transcription error";
@@ -600,7 +667,7 @@ export default function useVoiceAgent({
       "Processing transcript...";
     const userMessageId = crypto.randomUUID();
     pendingUserMessageIdRef.current = userMessageId;
-    updateActiveMessages((prev) => [
+    updateActiveMessagesRef.current((prev) => [
       ...prev,
       { id: userMessageId, role: "user", text: userText },
     ]);
@@ -614,7 +681,11 @@ export default function useVoiceAgent({
     }
     void (async () => {
       await maybeInjectRelatedContext(userText);
-      dcRef.current?.send(JSON.stringify({ type: "response.create" }));
+      if (!dcRef.current || dcRef.current.readyState !== "open") {
+        setStatus("Realtime channel not ready. Try again.");
+        return;
+      }
+      dcRef.current.send(JSON.stringify({ type: "response.create" }));
       setIsResponding(true);
       setStatus("Audio sent. Waiting for response...");
     })();
@@ -639,7 +710,15 @@ export default function useVoiceAgent({
   };
 
   const stopResponse = () => {
-    dcRef.current?.send(JSON.stringify({ type: "response.cancel" }));
+    if (!isResponding) {
+      setStatus("No active response to stop.");
+      return;
+    }
+    if (!dcRef.current || dcRef.current.readyState !== "open") {
+      setStatus("Realtime channel not ready.");
+      return;
+    }
+    dcRef.current.send(JSON.stringify({ type: "response.cancel" }));
     audioRef.current?.pause();
     setIsResponding(false);
     assistantMessageIdRef.current = null;

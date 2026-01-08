@@ -4,9 +4,19 @@ type EmptyStateProps = {
   connected: boolean;
   status: string | null;
   onStart: () => void;
+  title?: string;
+  subtitle?: string;
+  steps?: string[];
 };
 
-export default function EmptyState({ connected, status, onStart }: EmptyStateProps) {
+export default function EmptyState({
+  connected,
+  status,
+  onStart,
+  title = "I am here to listen.",
+  subtitle,
+  steps,
+}: EmptyStateProps) {
   return (
     <div className="flex flex-col items-center justify-center py-16 text-center">
       <button
@@ -39,7 +49,20 @@ export default function EmptyState({ connected, status, onStart }: EmptyStatePro
           "Connecting..."
         )}
       </button>
-      <p className="mt-4 text-sm text-slate-500">I am here to listen.</p>
+      <p className="mt-4 text-sm text-slate-500">{title}</p>
+      {subtitle && <p className="mt-2 text-xs text-slate-400">{subtitle}</p>}
+      {steps && steps.length > 0 && (
+        <div className="mt-6 w-full max-w-md rounded-xl border border-blue-100 bg-white/70 p-4 text-left text-xs text-slate-600">
+          <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">
+            Quick Start
+          </div>
+          <ol className="mt-2 list-decimal space-y-1 pl-4">
+            {steps.map((step) => (
+              <li key={step}>{step}</li>
+            ))}
+          </ol>
+        </div>
+      )}
       {status && <div className="mt-2 text-xs text-slate-500">{status}</div>}
     </div>
   );

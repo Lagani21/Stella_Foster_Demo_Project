@@ -62,7 +62,14 @@ If the user expresses severe distress or thoughts of self-harm:
 
 Your success is measured by one thing:
 Does the user feel slightly calmer and less alone by the end of the interaction?`,
+          output_modalities: ["audio"],
           audio: {
+            input: {
+              turn_detection: {
+                type: "server_vad",
+                create_response: false,
+              },
+            },
             output: { voice: "marin" },
           },
           tools: [
