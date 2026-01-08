@@ -149,6 +149,46 @@ function VoiceAgent() {
     });
   };
 
+  const buildRelatedContext = (items: any[]) => {
+    const lines = items.slice(0, 3).map((item: any, index: number) => {
+      const parts = [
+        item.sessionSummary ? `Summary: ${item.sessionSummary}` : null,
+        item.emotion ? `Emotion: ${item.emotion}` : null,
+        item.keyStressor ? `Stressor: ${item.keyStressor}` : null,
+        item.microStep ? `Micro step: ${item.microStep}` : null,
+      ].filter(Boolean);
+      return `${index + 1}) ${parts.join(" | ")}`;
+    });
+    return lines.length
+      ? `Relevant past context:\n${lines.join("\n")}`
+      : "";
+  };
+
+  const maybeInjectRelatedContext = async (query: string) => {
+    if (!isAuthed || !query.trim()) return;
+    try {
+      const res = await fetch(
+        `/api/related-sessions?query=${encodeURIComponent(query)}&limit=3`
+      );
+      if (!res.ok) return;
+      const data = await res.json();
+      const context = buildRelatedContext(data);
+      if (!context) return;
+      dcRef.current?.send(
+        JSON.stringify({
+          type: "conversation.item.create",
+          item: {
+            type: "message",
+            role: "system",
+            content: [{ type: "input_text", text: context }],
+          },
+        })
+      );
+    } catch {
+      // Ignore context failures
+    }
+  };
+
   const createSessionRemote = async (title?: string) => {
     const res = await fetch("/api/sessions", {
       method: "POST",
@@ -331,6 +371,183 @@ function VoiceAgent() {
             }
             if (event.type === "response.output_audio.delta") {
               setStatus("Receiving audio...");
+            }
+            if (
+              event.type === "response.function_call" &&
+              event.name === "log_emotional_state"
+            ) {
+              void (async () => {
+                try {
+                  const payload = event.arguments
+                    ? JSON.parse(event.arguments)
+                    : null;
+                  if (payload) {
+                    await fetch("/api/emotions", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        emotion: payload.emotion,
+                        intensity: payload.intensity,
+                        primary_triggers: payload.primary_triggers,
+                        confidence: payload.confidence,
+                        sessionId: activeSessionIdRef.current,
+                      }),
+                    });
+                  }
+                } catch {
+                  // Ignore storage failures
+                } finally {
+                  dc.send(
+                    JSON.stringify({
+                      type: "response.function_result",
+                      name: "log_emotional_state",
+                      result: { status: "ok" },
+                    })
+                  );
+                }
+              })();
+            }
+            if (
+              event.type === "response.function_call" &&
+              event.name === "externalize_thoughts"
+            ) {
+              void (async () => {
+                try {
+                  const payload = event.arguments
+                    ? JSON.parse(event.arguments)
+                    : null;
+                  if (payload) {
+                    await fetch("/api/externalize", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        summary: payload.summary,
+                        structured_view: payload.structured_view,
+                        sessionId: activeSessionIdRef.current,
+                      }),
+                    });
+                  }
+                } catch {
+                  // Ignore storage failures
+                } finally {
+                  dc.send(
+                    JSON.stringify({
+                      type: "response.function_result",
+                      name: "externalize_thoughts",
+                      result: { status: "ok" },
+                    })
+                  );
+                }
+              })();
+            }
+            if (event.type === "response.function_call" && event.name === "save_session") {
+              void (async () => {
+                try {
+                  const payload = event.arguments
+                    ? JSON.parse(event.arguments)
+                    : null;
+                  if (payload) {
+                    await fetch("/api/save-session", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        session_summary: payload.session_summary,
+                        emotion: payload.emotion,
+                        intensity: payload.intensity,
+                        key_stressor: payload.key_stressor,
+                        micro_step: payload.micro_step,
+                        sessionId: activeSessionIdRef.current,
+                      }),
+                    });
+                  }
+                } catch {
+                  // Ignore storage failures
+                } finally {
+                  dc.send(
+                    JSON.stringify({
+                      type: "response.function_result",
+                      name: "save_session",
+                      result: { status: "ok" },
+                    })
+                  );
+                }
+              })();
+            }
+            if (
+              event.type === "response.function_call" &&
+              event.name === "retrieve_related_sessions"
+            ) {
+              void (async () => {
+                try {
+                  const payload = event.arguments
+                    ? JSON.parse(event.arguments)
+                    : null;
+                  if (payload?.query) {
+                    const res = await fetch(
+                      `/api/related-sessions?query=${encodeURIComponent(
+                        payload.query
+                      )}&limit=${encodeURIComponent(payload.limit ?? 3)}`
+                    );
+                    const data = res.ok ? await res.json() : [];
+                    dc.send(
+                      JSON.stringify({
+                        type: "response.function_result",
+                        name: "retrieve_related_sessions",
+                        result: { sessions: data },
+                      })
+                    );
+                  } else {
+                    dc.send(
+                      JSON.stringify({
+                        type: "response.function_result",
+                        name: "retrieve_related_sessions",
+                        result: { sessions: [] },
+                      })
+                    );
+                  }
+                } catch {
+                  dc.send(
+                    JSON.stringify({
+                      type: "response.function_result",
+                      name: "retrieve_related_sessions",
+                      result: { sessions: [] },
+                    })
+                  );
+                }
+              })();
+            }
+            if (
+              event.type === "response.function_call" &&
+              event.name === "park_worry_for_later"
+            ) {
+              void (async () => {
+                try {
+                  const payload = event.arguments
+                    ? JSON.parse(event.arguments)
+                    : null;
+                  if (payload) {
+                    await fetch("/api/park-worry", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        worry: payload.worry,
+                        review_time: payload.review_time,
+                        sessionId: activeSessionIdRef.current,
+                      }),
+                    });
+                  }
+                } catch {
+                  // Ignore storage failures
+                } finally {
+                  dc.send(
+                    JSON.stringify({
+                      type: "response.function_result",
+                      name: "park_worry_for_later",
+                      result: { status: "ok" },
+                    })
+                  );
+                }
+              })();
             }
             if (event.type === "response.completed") {
               setStatus("Response complete.");
@@ -545,13 +762,16 @@ function VoiceAgent() {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
       mediaRecorderRef.current.stop();
     }
-    if (!isResponding) {
+    if (isResponding) {
+      setStatus("Response already in progress...");
+      return;
+    }
+    void (async () => {
+      await maybeInjectRelatedContext(userText);
       dcRef.current?.send(JSON.stringify({ type: "response.create" }));
       setIsResponding(true);
       setStatus("Audio sent. Waiting for response...");
-    } else {
-      setStatus("Response already in progress...");
-    }
+    })();
   };
 
   const toggleMic = () => {
