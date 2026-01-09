@@ -41,6 +41,12 @@ Optional:
 npx prisma studio
 ```
 
+### Prisma Notes
+
+- Prisma schema lives at `prisma/schema.prisma`.
+- SQLite database is stored at `prisma/dev.db` (from `DATABASE_URL="file:./dev.db"`).
+- To reset the database, delete `prisma/dev.db` and rerun `npx prisma migrate dev`.
+
 ## Run Locally
 
 ```

@@ -20,8 +20,17 @@ export default function SignupPage() {
       body: JSON.stringify({ name, email, password }),
     });
     if (!res.ok) {
-      const data = await res.json();
-      setError(data.error || "Sign up failed.");
+      const text = await res.text();
+      let message = "Sign up failed.";
+      if (text) {
+        try {
+          const data = JSON.parse(text);
+          message = data.error || message;
+        } catch {
+          message = text;
+        }
+      }
+      setError(message);
       setLoading(false);
       return;
     }
